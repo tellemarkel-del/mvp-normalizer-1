@@ -10,9 +10,10 @@ import logging
 # ------------------ LOGGING ------------------
 logging.basicConfig(level=logging.DEBUG)
 
-# ------------------ CONFIG ------------------
+# ------------------ APP CONFIG ------------------
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecretkey')
+# DATABASE_URL puede ser SQLite para pruebas o Postgres para producción
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///db.sqlite3')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -21,9 +22,9 @@ bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# ------------------ STRIPE ------------------
-stripe.api_key = "sk_test_51S7FjoAEv95v9N8XFpcrO881hXXG5tFyh1W0uL9rOqBeos0R8nGJkw0kL0JOLU7ZHpazyfpbUIsBgBgpixPyqxIS006h4qtupf"
-STRIPE_WEBHOOK_SECRET = "whsec_f9a2f5e61bce58c97982ca8ebd9760c7a2573782443da99cab8385957ff28736"
+# ------------------ STRIPE CONFIG ------------------
+stripe.api_key = os.environ.get('STRIPE_API_KEY')  # Variable de entorno en Railway
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET')  # Variable de entorno en Railway
 
 # ------------------ MODELS ------------------
 class User(db.Model, UserMixin):
@@ -86,7 +87,7 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-# ---------- MVP / NORMALIZADOR ----------
+# ---------- MVP ----------
 @app.route('/mvp', methods=['GET', 'POST'])
 @login_required
 def mvp():
@@ -96,7 +97,7 @@ def mvp():
             flash('No tienes suficientes créditos')
             return redirect(url_for('mvp'))
 
-        # Aquí iría tu lógica de OCR + OpenAI
+        # Aquí iría tu lógica OCR + OpenAI
         for f in files:
             filename = secure_filename(f.filename)
             # f.save(os.path.join("uploads", filename))
@@ -111,11 +112,10 @@ def mvp():
 @app.route('/buy_credits')
 @login_required
 def buy_credits():
-    # Configura price_id según tus productos en Stripe
     session = stripe.checkout.Session.create(
         payment_method_types=['card'],
         line_items=[{
-            'price': 'price_10credits_id',  # Reemplaza con tu price_id real
+            'price': 'price_10credits_id',  # reemplaza con tu price_id real en Stripe
             'quantity': 1
         }],
         mode='payment',
@@ -141,15 +141,6 @@ def stripe_webhook():
         session = event['data']['object']
         user_id = session['client_reference_id']
         user = User.query.get(user_id)
-
-        # Ajusta la cantidad de créditos según el price_id real
-        credits_to_add = 10
+        credits_to_add = 10  # Ajusta según tu product/price_id
         user.credits += credits_to_add
-        db.session.commit()
-
-    return jsonify(success=True)
-
-# ------------------ RUN ------------------
-if __name__ == '__main__':
-    db.create_all()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=True)
+        db.session.commit
