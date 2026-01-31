@@ -1,71 +1,137 @@
-import os
-from flask import Flask, request, render_template, send_file, jsonify
-from utils import process_documents
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 import stripe
-from config import STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY
+import os
+from werkzeug.utils import secure_filename
 
+# ------------------ CONFIG ------------------
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'supersecretkey')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///db.sqlite3')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# ---------- Stripe setup ----------
-stripe.api_key = STRIPE_SECRET_KEY
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
 
-# Simple in-memory "users" dict for MVP
-# user_id -> credits
-USERS = {
-    "demo_user": 5  # ejemplo inicial: 5 créditos
-}
+stripe.api_key = os.environ.get('STRIPE_API_KEY', 'sk_test_yourkey')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', 'whsec_yoursecret')
 
-# ---------- Routes ----------
+# ------------------ MODELS ------------------
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(50), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    credits = db.Column(db.Integer, default=0)
 
-@app.route("/")
-def index():
-    return render_template("index.html", stripe_key=STRIPE_PUBLISHABLE_KEY)
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
-@app.route("/create-checkout-session", methods=["POST"])
-def create_checkout_session():
-    data = request.json
-    user_id = data.get("user_id")
-    credits_to_buy = data.get("credits", 1)
+# ------------------ ROUTES ------------------
+@app.route('/')
+def home():
+    return redirect(url_for('login'))
 
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if User.query.filter_by(username=username).first():
+            flash("Usuario ya existe")
+            return redirect(url_for('signup'))
+        hashed = bcrypt.generate_password_hash(password).decode('utf-8')
+        user = User(username=username, password_hash=hashed)
+        db.session.add(user)
+        db.session.commit()
+        login_user(user)
+        return redirect(url_for('mvp'))
+    return render_template('signup.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and bcrypt.check_password_hash(user.password_hash, password):
+            login_user(user)
+            return redirect(url_for('mvp'))
+        flash("Usuario o contraseña incorrectos")
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+# ------------------ MVP ------------------
+@app.route('/mvp', methods=['GET', 'POST'])
+@login_required
+def mvp():
+    if request.method == 'POST':
+        files = request.files.getlist('files')
+        if len(files) > current_user.credits:
+            flash('No tienes suficientes créditos')
+            return redirect(url_for('mvp'))
+
+        # Procesa archivos con tu lógica actual
+        for f in files:
+            filename = secure_filename(f.filename)
+            # Aquí iría tu código actual de OCR + OpenAI
+            # f.save(os.path.join("uploads", filename))
+        current_user.credits -= len(files)
+        db.session.commit()
+        flash(f'Procesados {len(files)} archivos. Créditos restantes: {current_user.credits}')
+
+    return render_template('index.html', credits=current_user.credits)
+
+# ------------------ STRIPE ------------------
+@app.route('/buy_credits')
+@login_required
+def buy_credits():
+    # Ejemplo: pack de 10 créditos = price_id
     session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        mode="payment",
+        payment_method_types=['card'],
         line_items=[{
-            "price_data": {
-                "currency": "usd",
-                "product_data": {"name": f"{credits_to_buy} Invoice Credits"},
-                "unit_amount": 100 * credits_to_buy,  # $1 por crédito
-            },
-            "quantity": 1,
+            'price': 'price_10credits_id',  # Reemplaza con tu price_id real
+            'quantity': 1
         }],
-        success_url=f"{data.get('success_url')}?session_id={{CHECKOUT_SESSION_ID}}&user_id={user_id}",
-        cancel_url=f"{data.get('cancel_url')}",
+        mode='payment',
+        success_url=url_for('mvp', _external=True),
+        cancel_url=url_for('mvp', _external=True),
+        client_reference_id=current_user.id
     )
-    return jsonify({"id": session.id})
+    return redirect(session.url)
 
-@app.route("/upload", methods=["POST"])
-def upload_file():
-    user_id = request.form.get("user_id", "demo_user")
+@app.route('/webhook', methods=['POST'])
+def stripe_webhook():
+    payload = request.data
+    sig_header = request.headers.get('Stripe-Signature')
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except Exception as e:
+        return jsonify(success=False), 400
 
-    if USERS.get(user_id, 0) <= 0:
-        return jsonify({"error": "Not enough credits"}), 403
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        user_id = session['client_reference_id']
+        user = User.query.get(user_id)
 
-    uploaded_files = request.files.getlist("files")
-    filepaths = []
+        # Decide créditos según price_id
+        price_id = session['line_items'][0]['price']['id'] if 'line_items' in session else None
+        credits_to_add = 10  # por ejemplo pack de 10, cambiar según price_id real
+        user.credits += credits_to_add
+        db.session.commit()
 
-    for file in uploaded_files:
-        path = os.path.join("uploads", file.filename)
-        os.makedirs("uploads", exist_ok=True)
-        file.save(path)
-        filepaths.append(path)
+    return jsonify(success=True)
 
-    output_path = process_documents(filepaths)
-
-    # Deduct 1 credit per uploaded file
-    USERS[user_id] -= len(uploaded_files)
-
-    return send_file(output_path, as_attachment=True)
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# ------------------ RUN ------------------
+if __name__ == '__main__':
+    db.create_all()
+    app.run(debug=True)
