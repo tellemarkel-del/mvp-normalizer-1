@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sign Up</title>
+  <style>
+    body { font-family: 'Arial', sans-serif; background: linear-gradient(to right, #b2fef7, #d3ffe7);
+           display:flex; justify-content:center; align-items:center; height:100vh; }
+    .container { background:white; padding:40px; border-radius:20px; box-shadow:0 0 20px rgba(0,0,0,0.1); text-align:center; width:400px; }
+    input { margin-bottom: 20px; padding:10px; width: 80%; border-radius:10px; border:1px solid #ccc; }
+    button { background-color: #7ed957; border:none; padding:10px 20px; color:white; border-radius:10px; cursor:pointer; font-size:16px; }
+    a { display:block; margin-top:10px; color:#4caf50; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h3>Registrarse</h3>
+    <form method="POST">
+      <input type="text" name="username" placeholder="Usuario" required><br>
+      <input type="password" name="password" placeholder="Contraseña" required><br>
+      <button type="submit">Sign Up</button>
+    </form>
+    <a href="{{ url_for('login') }}">Ya tengo cuenta</a>
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <ul>
+          {% for msg in messages %}
+            <li>{{ msg }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+  </div>
+</body>
+</html>
