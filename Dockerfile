@@ -1,24 +1,13 @@
-FROM python:3.13-slim
+FROM python:3.11-slim
 
-# System dependencies
-RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    poppler-utils \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Work directory
 WORKDIR /app
 
-# Copy project
-COPY . /app
-
-# Install Python dependencies
+COPY requirements.txt requirements.txt
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
-# Expose port for Railway
-EXPOSE 5000
+COPY . .
 
-# Start Flask app
+ENV PORT=8080
+
 CMD ["python", "main.py"]
